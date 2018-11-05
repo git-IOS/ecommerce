@@ -101,7 +101,10 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
                 basket = prepare_basket(request, [coupon_product])
 
                 # Create an order now since payment is handled out of band via an invoice.
-                client, __ = BusinessClient.objects.get_or_create(name=request.data.get('client'))
+                client, __ = BusinessClient.objects.update_or_create(
+                    name=cleaned_voucher_data['enterprise_customer_name'] or request.data.get('client'),
+                    defaults={'enterprise_customer_uuid': cleaned_voucher_data['enterprise_customer']}
+                )
                 invoice_data = self.create_update_data_dict(data=request.data, fields=Invoice.UPDATEABLE_INVOICE_FIELDS)
                 response_data = self.create_order_for_invoice(
                     basket, coupon_id=coupon_product.id, client=client, invoice_data=invoice_data
@@ -191,6 +194,7 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
 
         try:
             enterprise_customer = enterprise_customer_data['id'] if enterprise_customer_data else None
+            enterprise_customer_name = enterprise_customer_data['name'] if enterprise_customer_data else None
         except (KeyError, TypeError):
             validation_message = 'Unexpected EnterpriseCustomer data format received for coupon.'
             raise ValidationError(validation_message)
@@ -209,6 +213,7 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
             'email_domains': request.data.get('email_domains'),
             'end_datetime': request.data.get('end_datetime'),
             'enterprise_customer': enterprise_customer,
+            'enterprise_customer_name': enterprise_customer_name,
             'enterprise_customer_catalog': request.data.get('enterprise_customer_catalog'),
             'max_uses': max_uses,
             'note': request.data.get('note'),
@@ -401,8 +406,13 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
             ProductCategory.objects.filter(product=coupon).update(category=category)
 
         client_username = request_data.get('client')
-        if client_username:
-            client, __ = BusinessClient.objects.get_or_create(name=client_username)
+        enterprise_customer = request_data.get('enterprise_customer', {}).get('id', None)
+        enterprise_customer_name = request_data.get('enterprise_customer', {}).get('name', None)
+        if client_username or enterprise_customer:
+            client, __ = BusinessClient.objects.update_or_create(
+                name=enterprise_customer_name or client_username,
+                defaults={'enterprise_customer_uuid': enterprise_customer}
+            )
             Invoice.objects.filter(order__basket=baskets.first()).update(business_client=client)
 
         coupon_price = request_data.get('price')
