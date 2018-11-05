@@ -1,6 +1,7 @@
 from __future__ import unicode_literals
 
 import logging
+import waffle
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -28,6 +29,7 @@ from ecommerce.extensions.voucher.utils import (
     get_or_create_enterprise_offer, update_voucher_offer, update_voucher_with_enterprise_offer
 )
 from ecommerce.invoice.models import Invoice
+from ecommerce.enterprise.constants import ENTERPRISE_OFFERS_FOR_COUPONS_SWITCH
 
 Basket = get_model('basket', 'Basket')
 Benefit = get_model('offer', 'Benefit')
@@ -43,6 +45,7 @@ ProductClass = get_model('catalogue', 'ProductClass')
 Range = get_model('offer', 'Range')
 StockRecord = get_model('partner', 'StockRecord')
 Voucher = get_model('voucher', 'Voucher')
+Line = get_model('basket', 'Line')
 
 DEPRECATED_COUPON_CATEGORIES = ['Bulk Enrollment']
 
@@ -54,10 +57,19 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
     filter_class = ProductFilter
 
     def get_queryset(self):
-        return Product.objects.filter(
-            product_class__name=COUPON_PRODUCT_CLASS_NAME,
-            stockrecords__partner=self.request.site.siteconfiguration.partner
-        )
+        filter_kwargs = {
+            'product_class__name': COUPON_PRODUCT_CLASS_NAME,
+            'stockrecords__partner': self.request.site.siteconfiguration.partner,
+        }
+        # If we have switched to using enterprise offers, ensure that enterprise coupons do not show up
+        # in the regular coupon list view
+        if waffle.switch_is_active(ENTERPRISE_OFFERS_FOR_COUPONS_SWITCH):
+            invoices = Invoice.objects.filter(business_client__enterprise_customer_uuid__isnull=False)
+            orders = Order.objects.filter(id__in=[invoice.order_id for invoice in invoices])
+            basket_lines = Line.objects.filter(basket_id__in=[order.basket_id for order in orders])
+            filter_kwargs['id__not_in'] = [line.product_id for line in basket_lines]
+
+        return Product.objects.filter(**filter_kwargs)
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -103,7 +115,10 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
                 basket = prepare_basket(request, [coupon_product])
 
                 # Create an order now since payment is handled out of band via an invoice.
-                client, __ = BusinessClient.objects.get_or_create(name=request.data.get('client'))
+                client, __ = BusinessClient.objects.update_or_create(
+                    name=cleaned_voucher_data['enterprise_customer_name'] or request.data.get('client'),
+                    defaults={'enterprise_customer_uuid': cleaned_voucher_data['enterprise_customer']}
+                )
                 invoice_data = self.create_update_data_dict(data=request.data, fields=Invoice.UPDATEABLE_INVOICE_FIELDS)
                 response_data = self.create_order_for_invoice(
                     basket, coupon_id=coupon_product.id, client=client, invoice_data=invoice_data
@@ -192,7 +207,11 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
             raise ValidationError(validation_message)
 
         try:
-            enterprise_customer = enterprise_customer_data['id'] if enterprise_customer_data else None
+            enterprise_customer = enterprise_customer_data.get('id') if enterprise_customer_data else None
+            enterprise_customer_name = enterprise_customer_data.get('name') if enterprise_customer_data else None
+            if (enterprise_customer and waffle.switch_is_active(ENTERPRISE_OFFERS_FOR_COUPONS_SWITCH) and
+                    cls.__class__.__name__ != 'EnterpriseCouponViewSet'):
+                raise ValidationError('Enterprise coupons can no longer be created from this endpoint.')
         except (KeyError, TypeError):
             validation_message = 'Unexpected EnterpriseCustomer data format received for coupon.'
             raise ValidationError(validation_message)
@@ -211,6 +230,7 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
             'email_domains': request.data.get('email_domains'),
             'end_datetime': request.data.get('end_datetime'),
             'enterprise_customer': enterprise_customer,
+            'enterprise_customer_name': enterprise_customer_name,
             'enterprise_customer_catalog': request.data.get('enterprise_customer_catalog'),
             'max_uses': max_uses,
             'note': request.data.get('note'),
@@ -346,6 +366,11 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
         """Update coupon depending on request data sent."""
         try:
             super(CouponViewSet, self).update(request, *args, **kwargs)
+            if (request.data.get('enterprise_customer') and
+                    waffle.switch_is_active(ENTERPRISE_OFFERS_FOR_COUPONS_SWITCH) and
+                    self.__class__.__name__ != 'EnterpriseCouponViewSet'):
+                raise ValidationError('Enterprise coupons can no longer be updated from this endpoint.')
+
             coupon = self.get_object()
             vouchers = coupon.attr.coupon_vouchers.vouchers
             self.update_voucher_data(request.data, vouchers)
@@ -403,8 +428,13 @@ class CouponViewSet(EdxOrderPlacementMixin, viewsets.ModelViewSet):
             ProductCategory.objects.filter(product=coupon).update(category=category)
 
         client_username = request_data.get('client')
-        if client_username:
-            client, __ = BusinessClient.objects.get_or_create(name=client_username)
+        enterprise_customer = request_data.get('enterprise_customer', {}).get('id', None)
+        enterprise_customer_name = request_data.get('enterprise_customer', {}).get('name', None)
+        if client_username or enterprise_customer:
+            client, __ = BusinessClient.objects.update_or_create(
+                name=enterprise_customer_name or client_username,
+                defaults={'enterprise_customer_uuid': enterprise_customer}
+            )
             Invoice.objects.filter(order__basket=baskets.first()).update(business_client=client)
 
         coupon_price = request_data.get('price')
