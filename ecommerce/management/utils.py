@@ -75,7 +75,7 @@ def refund_basket_transactions(site, basket_ids):
 class FulfillFrozenBaskets(EdxOrderPlacementMixin):
 
     @staticmethod
-    def is_valid_basket(basket_id):
+    def get_valid_basket(basket_id):
         """
         Checks if basket id is valid.
         :param basket_id: basket's id
@@ -99,7 +99,8 @@ class FulfillFrozenBaskets(EdxOrderPlacementMixin):
         """
         Gets payment notifications for basket. logs in case of no successful
         payment notification or multiple successful payment notifications.
-        :return: first successful payment notification
+        :return: first successful payment notification or None if no successful
+        payment notification exists.
         """
         # Filter the successful payment processor response which in case
         # of Cybersource includes "u'decision': u'ACCEPT'" and in case of
@@ -123,7 +124,7 @@ class FulfillFrozenBaskets(EdxOrderPlacementMixin):
 
         logger.info('Trying to complete order for frozen basket %d', basket_id)
 
-        basket = self.is_valid_basket(basket_id)
+        basket = self.get_valid_basket(basket_id)
 
         if not basket:
             return False
