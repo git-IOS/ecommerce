@@ -68,7 +68,7 @@ class BasketMiddleware(OscarBasketMiddleware):
         # Cache basket instance for the duration of this request
         request._basket_cache = basket
 
-        return
+        return basket
 
     @newrelic.agent.function_trace()
     def apply_offers_to_basket(self, request, basket):
