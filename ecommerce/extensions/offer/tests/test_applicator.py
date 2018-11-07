@@ -51,7 +51,7 @@ class CustomApplicatorTests(TestCase):
 
     def test_get_offers_without_bundle(self):
         """ Verify that all non bundle offers are returned if no bundle id is given. """
-        program_offers = [ProgramOfferFactory()]
+        ProgramOfferFactory()
         site_offers = ConditionalOfferFactory.create_batch(3)
 
         self.applicator.get_program_offers = mock.Mock()
