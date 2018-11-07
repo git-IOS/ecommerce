@@ -50,7 +50,8 @@ class CustomApplicatorTests(TestCase):
         self.assertFalse(self.applicator.get_site_offers.called)  # Verify there was no attempt to get all site offers
 
     def test_get_offers_without_bundle(self):
-        """ Verify that all offers are returned if no bundle id is given. """
+        """ Verify that all non bundle offers are returned if no bundle id is given. """
+        program_offers = [ProgramOfferFactory()]
         site_offers = ConditionalOfferFactory.create_batch(3)
 
         self.applicator.get_program_offers = mock.Mock()
@@ -72,8 +73,8 @@ class CustomApplicatorTests(TestCase):
                 (
                     LOGGER_NAME,
                     'WARNING',
-                    'ProgramApplicator processed Basket [{}] from Request [{}] and User [{}] without a bundle meaning'
-                    ' all site offers were considered.'.format(self.basket, None, self.user),
+                    'CustomApplicator processed Basket [{}] from Request [{}] and User [{}] without a bundle.'.format(
+                        self.basket, None, self.user),
                 )
             )
 

@@ -1,10 +1,10 @@
 import newrelic.agent
-
 import waffle
 
-from ecommerce.extensions.offer.constants import CUSTOM_APPLICATOR_USE_FLAG
 from oscar.apps.basket.middleware import BasketMiddleware as OscarBasketMiddleware
-from oscar.core.loading import get_model, get_class
+from oscar.core.loading import get_class, get_model
+
+from ecommerce.extensions.offer.constants import CUSTOM_APPLICATOR_USE_FLAG
 
 Applicator = get_class('offer.applicator', 'Applicator')
 Basket = get_model('basket', 'basket')
