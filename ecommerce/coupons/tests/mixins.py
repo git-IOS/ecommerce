@@ -2,6 +2,7 @@ import datetime
 import json
 
 import httpretty
+import mock
 from django.test import RequestFactory
 from edx_django_utils.cache import TieredCache
 from oscar.core.utils import slugify
@@ -13,7 +14,7 @@ from ecommerce.extensions.api.v2.views.coupons import CouponViewSet
 from ecommerce.extensions.basket.utils import prepare_basket
 from ecommerce.extensions.catalogue.utils import create_coupon_product
 from ecommerce.tests.factories import PartnerFactory
-from ecommerce.tests.mixins import Applicator, Benefit, Catalog, ProductClass, Voucher
+from ecommerce.tests.mixins import Applicator, Benefit, Catalog, ProductClass, SiteMixin, Voucher
 
 
 class DiscoveryMockMixin(object):
@@ -388,7 +389,7 @@ class DiscoveryMockMixin(object):
         )
 
 
-class CouponMixin(object):
+class CouponMixin(SiteMixin):
     """ Mixin for preparing data for coupons and creating coupons. """
 
     REDEMPTION_URL = "/coupons/offer/?code={}"
@@ -423,9 +424,9 @@ class CouponMixin(object):
 
         return pc
 
-    def create_coupon(self, benefit_type=Benefit.PERCENTAGE, benefit_value=100, catalog=None,
-                      catalog_query=None, client=None, code='', course_seat_types=None, email_domains=None,
-                      enterprise_customer=None, max_uses=None, note=None, partner=None, price=100, quantity=5,
+    def create_coupon(self, benefit_type=Benefit.PERCENTAGE, benefit_value=100, catalog=None, catalog_query=None,
+                      client=None, code='', course_seat_types=None, email_domains=None, enterprise_customer=None,
+                      enterprise_customer_catalog=None, max_uses=None, note=None, partner=None, price=100, quantity=5,
                       title='Test coupon', voucher_type=Voucher.SINGLE_USE, course_catalog=None, program_uuid=None):
         """Helper method for creating a coupon.
 
@@ -439,6 +440,7 @@ class CouponMixin(object):
             course_catalog (int): Course catalog id from Discovery Service
             course_seat_types(str): A string of comma-separated list of seat types
             enterprise_customer (str): Hex-encoded UUID for an Enterprise Customer object from the Enterprise app.
+            enterprise_customer_catalog (str): UUID for an Enterprise Customer Catalog from the Enterprise app.
             email_domains(str): A comma seperated list of email domains
             max_uses (int): Number of Voucher max uses
             note (str): Coupon note.
@@ -457,35 +459,40 @@ class CouponMixin(object):
             partner = PartnerFactory(name='Tester')
         if client is None:
             client, __ = BusinessClient.objects.get_or_create(name='Test Client')
-        if catalog is None and not ((catalog_query or course_catalog or program_uuid) and course_seat_types):
+        if (catalog is None and not enterprise_customer_catalog and not
+                ((catalog_query or course_catalog or program_uuid) and course_seat_types)):
             catalog = Catalog.objects.create(partner=partner)
         if code is not '':
             quantity = 1
 
-        coupon = create_coupon_product(
-            benefit_type=benefit_type,
-            benefit_value=benefit_value,
-            catalog=catalog,
-            catalog_query=catalog_query,
-            category=self.category,
-            code=code,
-            course_catalog=course_catalog,
-            course_seat_types=course_seat_types,
-            email_domains=email_domains,
-            end_datetime=datetime.datetime(2020, 1, 1),
-            enterprise_customer=enterprise_customer,
-            enterprise_customer_catalog=None,
-            max_uses=max_uses,
-            note=note,
-            partner=partner,
-            price=price,
-            quantity=quantity,
-            start_datetime=datetime.datetime(2015, 1, 1),
-            title=title,
-            voucher_type=voucher_type,
-            program_uuid=program_uuid,
-            site=self.site
-        )
+        with mock.patch(
+            "ecommerce.extensions.voucher.utils.get_enterprise_customer",
+            mock.Mock(return_value={'name': 'Fake enterprise'})
+        ):
+            coupon = create_coupon_product(
+                benefit_type=benefit_type,
+                benefit_value=benefit_value,
+                catalog=catalog,
+                catalog_query=catalog_query,
+                category=self.category,
+                code=code,
+                course_catalog=course_catalog,
+                course_seat_types=course_seat_types,
+                email_domains=email_domains,
+                end_datetime=datetime.datetime(2020, 1, 1),
+                enterprise_customer=enterprise_customer,
+                enterprise_customer_catalog=enterprise_customer_catalog,
+                max_uses=max_uses,
+                note=note,
+                partner=partner,
+                price=price,
+                quantity=quantity,
+                start_datetime=datetime.datetime(2015, 1, 1),
+                title=title,
+                voucher_type=voucher_type,
+                program_uuid=program_uuid,
+                site=self.site
+            )
 
         request = RequestFactory()
         request.site = self.site

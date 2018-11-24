@@ -31,6 +31,7 @@ from ecommerce.courses.tests.factories import CourseFactory
 from ecommerce.enterprise.tests.mixins import EnterpriseServiceMockMixin
 from ecommerce.entitlements.utils import create_or_update_course_entitlement
 from ecommerce.extensions.analytics.utils import translate_basket_line_for_segment
+from ecommerce.extensions.basket.constants import EMAIL_OPT_IN_ATTRIBUTE
 from ecommerce.extensions.basket.tests.mixins import BasketMixin
 from ecommerce.extensions.basket.utils import _set_basket_bundle_status
 from ecommerce.extensions.catalogue.tests.mixins import DiscoveryTestMixin
@@ -78,8 +79,7 @@ class BasketAddItemsViewTests(
         self.client.login(username=self.user.username, password=self.password)
 
         self.course = CourseFactory(partner=self.partner)
-        self.course.create_or_update_seat('verified', True, 50)
-        product = self.course.create_or_update_seat('verified', False, 0)
+        product = self.course.create_or_update_seat('verified', False, 50)
         self.stock_record = StockRecordFactory(product=product, partner=self.partner)
         self.catalog = Catalog.objects.create(partner=self.partner)
         self.catalog.stock_records.add(self.stock_record)
@@ -139,12 +139,9 @@ class BasketAddItemsViewTests(
     def test_add_multiple_products_and_use_voucher(self, usage):
         """ Verify the basket accepts multiple products and a single use voucher. """
         products = ProductFactory.create_batch(3, stockrecords__partner=self.partner)
-        voucher = factories.VoucherFactory(usage=usage)
         product_range = factories.RangeFactory(products=products)
-        voucher.offers.add(factories.ConditionalOfferFactory(
-            benefit=factories.BenefitFactory(range=product_range),
-            condition=factories.ConditionFactory(range=product_range)
-        ))
+        voucher, __ = prepare_voucher(_range=product_range, usage=usage)
+
         qs = urllib.urlencode({
             'sku': [product.stockrecords.first().partner_sku for product in products],
             'code': voucher.code
@@ -268,6 +265,45 @@ class BasketAddItemsViewTests(
         self.assertEqual(response.status_code, 303)
         basket = response.wsgi_request.basket
         self.assertEqual(basket.status, Basket.OPEN)
+
+    @ddt.data(
+        ('false', 'False'),
+        ('true', 'True'),
+    )
+    @ddt.unpack
+    def test_email_opt_in_when_explicitly_given(self, opt_in, expected_value):
+        """
+        Verify the email_opt_in query string is saved into a BasketAttribute.
+        """
+        url = '{path}?sku={sku}&email_opt_in={opt_in}'.format(
+            path=self.path,
+            sku=self.stock_record.partner_sku,
+            opt_in=opt_in,
+        )
+        response = self.client.get(url)
+        basket = response.wsgi_request.basket
+        basket_attribute = BasketAttribute.objects.get(
+            basket=basket,
+            attribute_type=BasketAttributeType.objects.get(name=EMAIL_OPT_IN_ATTRIBUTE),
+        )
+        self.assertEqual(basket_attribute.value_text, expected_value)
+
+    def test_email_opt_in_when_not_given(self):
+        """
+        Verify that email_opt_in defaults to false if not specified.
+        """
+
+        url = '{path}?sku={sku}'.format(
+            path=self.path,
+            sku=self.stock_record.partner_sku,
+        )
+        response = self.client.get(url)
+        basket = response.wsgi_request.basket
+        basket_attribute = BasketAttribute.objects.get(
+            basket=basket,
+            attribute_type=BasketAttributeType.objects.get(name=EMAIL_OPT_IN_ATTRIBUTE),
+        )
+        self.assertEqual(basket_attribute.value_text, 'False')
 
 
 @httpretty.activate
@@ -648,6 +684,18 @@ class BasketSummaryViewTests(EnterpriseServiceMockMixin, DiscoveryTestMixin, Dis
 
         self.assertRedirects(response, reverse('checkout:free-checkout'), fetch_redirect_response=False)
 
+    def test_basket_offer_index_exception(self):
+        """
+        Test Basket offers index error is handled properly.
+        # todo : Remove this test once LEARNER-6578 is resolved.
+        """
+        seat = self.create_seat(self.course)
+        self.create_basket_and_add_product(seat)
+
+        with mock.patch('ecommerce.extensions.basket.models.Line.has_discount', return_value=True):
+            response = self.client.get(self.get_full_url(self.path))
+        self.assertEqual(response.status_code, 200)
+
 
 @httpretty.activate
 class VoucherAddViewTests(LmsApiMockMixin, TestCase):
@@ -717,7 +765,7 @@ class VoucherAddViewTests(LmsApiMockMixin, TestCase):
         self.mock_account_api(self.request, self.user.username, data={'is_active': True})
         __, product = prepare_voucher(code=COUPON_CODE, benefit_value=0)
         self.basket.add_product(product)
-        self.assert_form_valid_message("Your basket does not qualify for a coupon code discount.")
+        self.assert_form_valid_message('Basket does not qualify for coupon code {code}.'.format(code=COUPON_CODE))
 
     def test_voucher_used_error_msg(self):
         """ Verify correct error message is returned when voucher has been used (Single use). """

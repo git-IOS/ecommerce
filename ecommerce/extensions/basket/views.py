@@ -29,8 +29,10 @@ from ecommerce.extensions.analytics.utils import (
     track_segment_event,
     translate_basket_line_for_segment
 )
+from ecommerce.extensions.basket.constants import EMAIL_OPT_IN_ATTRIBUTE
 from ecommerce.extensions.basket.utils import (
     add_utm_params_to_url,
+    apply_voucher_on_basket_and_check_discount,
     get_basket_switch_data,
     prepare_basket,
     validate_voucher
@@ -41,6 +43,8 @@ from ecommerce.extensions.partner.shortcuts import get_partner_for_site
 from ecommerce.extensions.payment.constants import CLIENT_SIDE_CHECKOUT_FLAG_NAME
 from ecommerce.extensions.payment.forms import PaymentForm
 
+BasketAttribute = get_model('basket', 'BasketAttribute')
+BasketAttributeType = get_model('basket', 'BasketAttributeType')
 Benefit = get_model('offer', 'Benefit')
 logger = logging.getLogger(__name__)
 Product = get_model('catalogue', 'Product')
@@ -96,6 +100,14 @@ class BasketAddItemsView(View):
         if not available_products:
             msg = _('No product is available to buy.')
             return HttpResponseBadRequest(msg)
+
+        # Associate the user's email opt in preferences with the basket in
+        # order to opt them in later as part of fulfillment
+        BasketAttribute.objects.update_or_create(
+            basket=request.basket,
+            attribute_type=BasketAttributeType.objects.get(name=EMAIL_OPT_IN_ATTRIBUTE),
+            defaults={'value_text': request.GET.get('email_opt_in') == 'true'},
+        )
 
         try:
             prepare_basket(request, available_products, voucher)
@@ -283,10 +295,15 @@ class BasketSummaryView(BasketView):
             # Get variables for the switch link that toggles from enrollment codes and seat.
             switch_link_text, partner_sku = get_basket_switch_data(line.product)
 
-            if line.has_discount:
-                benefit = self.request.basket.applied_offers().values()[0].benefit
-                benefit_value = format_benefit_value(benefit)
-            else:
+            try:
+                if line.has_discount:
+                    benefit = self.request.basket.applied_offers().values()[0].benefit
+                    benefit_value = format_benefit_value(benefit)
+                else:
+                    benefit_value = None
+            except IndexError:
+                logger.exception('Basket {%d} line{%d} has discount value {%s} ', self.request.basket.id, line.id,
+                                 line.discount_value)
                 benefit_value = None
 
             line_data.update({
@@ -410,7 +427,7 @@ class BasketSummaryView(BasketView):
         try:
             applied_voucher = self.request.basket.vouchers.first()
             total_benefit = (
-                format_benefit_value(applied_voucher.offers.first().benefit)
+                format_benefit_value(applied_voucher.best_offer.benefit)
                 if applied_voucher else None
             )
         except ValueError:
@@ -431,41 +448,24 @@ class BasketSummaryView(BasketView):
 
 class VoucherAddView(BaseVoucherAddView):  # pylint: disable=function-redefined
     def apply_voucher_to_basket(self, voucher):
-        code = voucher.code
+        """
+        Validates and applies voucher on basket.
+        """
+        self.request.basket.clear_vouchers()
 
         is_valid, message = validate_voucher(voucher, self.request.user, self.request.basket, self.request.site)
         if not is_valid:
             messages.error(self.request, message)
+            self.request.basket.vouchers.remove(voucher)
             return
 
-        # Reset any site offers that are applied so that only one offer is active.
-        self.request.basket.reset_offer_applications()
-        self.request.basket.vouchers.add(voucher)
+        valid, msg = apply_voucher_on_basket_and_check_discount(voucher, self.request, self.request.basket)
 
-        # Raise signal
-        self.add_signal.send(sender=self, basket=self.request.basket, voucher=voucher)
-
-        # Recalculate discounts to see if the voucher gives any
-        Applicator().apply(self.request.basket, self.request.user,
-                           self.request)
-        discounts_after = self.request.basket.offer_applications
-
-        # Look for discounts from this new voucher
-        found_discount = False
-        for discount in discounts_after:
-            if discount['voucher'] and discount['voucher'] == voucher:
-                found_discount = True
-                break
-        if not found_discount:
-            messages.warning(
-                self.request,
-                _('Your basket does not qualify for a coupon code discount.'))
+        if not valid:
+            messages.warning(self.request, msg)
             self.request.basket.vouchers.remove(voucher)
         else:
-            messages.info(
-                self.request,
-                _("Coupon code '{code}' added to basket.").format(code=code)
-            )
+            messages.info(self.request, msg)
 
     def form_valid(self, form):
         code = form.cleaned_data['code']
@@ -491,7 +491,7 @@ class VoucherAddView(BaseVoucherAddView):  # pylint: disable=function-redefined
                 # specifically with the code that was submitted.
                 stock_record = basket_lines[0].stockrecord
 
-                offer = voucher.offers.first()
+                offer = voucher.best_offer
                 product = stock_record.product
                 email_confirmation_response = render_email_confirmation_if_required(self.request, offer, product)
                 if email_confirmation_response:

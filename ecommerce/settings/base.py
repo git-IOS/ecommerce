@@ -233,7 +233,6 @@ MIDDLEWARE_CLASSES = (
     'edx_django_utils.cache.middleware.TieredCacheMiddleware',
     'edx_rest_framework_extensions.middleware.RequestMetricsMiddleware',
     'edx_rest_framework_extensions.auth.jwt.middleware.EnsureJWTAuthSettingsMiddleware',
-    'edx_rest_framework_extensions.auth.jwt.middleware.JwtAuthCookieMiddleware',
 )
 # END MIDDLEWARE CONFIGURATION
 
@@ -451,7 +450,7 @@ EXTRA_SCOPE = ['permissions']
 # DJANGO REST FRAMEWORK
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
-        'edx_rest_framework_extensions.authentication.JwtAuthentication',
+        'edx_rest_framework_extensions.auth.jwt.authentication.JwtAuthentication',
         'ecommerce.extensions.api.authentication.BearerAuthentication',
         'rest_framework.authentication.SessionAuthentication',
     ),
